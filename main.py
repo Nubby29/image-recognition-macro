@@ -1,4 +1,4 @@
-# Image Recognition Macro v0.3.0
+# Image Recognition Macro v0.4.0
 
 import threading
 import tkinter as tk
@@ -11,7 +11,7 @@ from detector import ImageDetector
 from macro import MacroRunner, MacroSettings
 
 
-APP_VERSION = "0.3.0"
+APP_VERSION = "0.4.0"
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".webp"}
 
 
@@ -19,11 +19,12 @@ class ImageMacroApp:
     def __init__(self, root: tk.Tk):
         self.root = root
         self.root.title(f"Image Recognition Macro v{APP_VERSION}")
-        self.root.geometry("820x680")
-        self.root.minsize(720, 560)
+        self.root.geometry("900x720")
+        self.root.minsize(760, 600)
 
         self.template_path: str | None = None
         self.template_folder: Path | None = None
+        self.current_folder: Path | None = None
         self.template_images: list[Path] = []
         self.thumbnail_refs: list[ImageTk.PhotoImage] = []
         self.detector = ImageDetector()
@@ -54,17 +55,12 @@ class ImageMacroApp:
         template_box.pack(fill="both", expand=True, pady=(0, 12))
 
         folder_bar = ttk.Frame(template_box)
-        folder_bar.pack(fill="x", pady=(0, 10))
+        folder_bar.pack(fill="x", pady=(0, 8))
 
         ttk.Button(
             folder_bar, text="Select Template Folder",
             command=self.select_template_folder
         ).pack(side="left")
-
-        self.folder_label = ttk.Label(
-            folder_bar, text="No template folder selected"
-        )
-        self.folder_label.pack(side="left", fill="x", expand=True, padx=(10, 0))
 
         self.refresh_button = ttk.Button(
             folder_bar, text="Refresh", command=self.refresh_templates,
@@ -72,8 +68,33 @@ class ImageMacroApp:
         )
         self.refresh_button.pack(side="right")
 
+        self.folder_label = ttk.Label(
+            template_box, text="No template folder selected"
+        )
+        self.folder_label.pack(fill="x", pady=(0, 8))
+
+        navigation_bar = ttk.Frame(template_box)
+        navigation_bar.pack(fill="x", pady=(0, 8))
+
+        self.back_button = ttk.Button(
+            navigation_bar, text="← Back", command=self.go_back,
+            state="disabled"
+        )
+        self.back_button.pack(side="left")
+
+        self.home_button = ttk.Button(
+            navigation_bar, text="⌂ Root", command=self.go_root,
+            state="disabled"
+        )
+        self.home_button.pack(side="left", padx=(6, 12))
+
+        self.breadcrumb = ttk.Label(
+            navigation_bar, text="No folder selected"
+        )
+        self.breadcrumb.pack(side="left", fill="x", expand=True)
+
         self.template_count = ttk.Label(
-            template_box, text="Select a folder to see its images."
+            template_box, text="Select a folder to browse its contents."
         )
         self.template_count.pack(anchor="w", pady=(0, 8))
 
@@ -103,9 +124,7 @@ class ImageMacroApp:
                 scrollregion=self.gallery_canvas.bbox("all")
             )
         )
-        self.gallery_canvas.bind(
-            "<Configure>", self._resize_gallery
-        )
+        self.gallery_canvas.bind("<Configure>", self._resize_gallery)
 
         settings_box = ttk.LabelFrame(
             outer, text="2. Detection Settings", padding=14
@@ -157,12 +176,12 @@ class ImageMacroApp:
 
         ttk.Label(
             status_box, textvariable=self.status,
-            font=("Consolas", 11), wraplength=740
+            font=("Consolas", 11), wraplength=820
         ).pack(anchor="nw")
 
         ttk.Label(
             outer,
-            text="Tip: select a folder, then click a thumbnail. Detection uses the current screenshot, not saved coordinates.",
+            text="Tip: open folders inside the selected root to keep templates organized. Click an image to select it.",
             foreground="#555555"
         ).pack(anchor="w", pady=(10, 0))
 
@@ -177,22 +196,68 @@ class ImageMacroApp:
         self.threshold_value.config(text=f"{self.threshold.get():.2f}")
 
     def select_template_folder(self):
-        folder = filedialog.askdirectory(title="Select template folder")
+        folder = filedialog.askdirectory(title="Select template root folder")
         if not folder:
             return
 
         self.template_folder = Path(folder)
+        self.current_folder = self.template_folder
         self.folder_label.config(text=str(self.template_folder))
         self.refresh_button.config(state="normal")
+        self.go_root()
+
+    def go_root(self):
+        if not self.template_folder:
+            return
+        self.current_folder = self.template_folder
+        self.refresh_templates()
+
+    def go_back(self):
+        if not self.template_folder or not self.current_folder:
+            return
+        if self.current_folder == self.template_folder:
+            return
+
+        parent = self.current_folder.parent
+        try:
+            parent.relative_to(self.template_folder)
+            self.current_folder = parent
+        except ValueError:
+            self.current_folder = self.template_folder
+
+        self.refresh_templates()
+
+    def open_subfolder(self, folder: Path):
+        if not self.template_folder:
+            return
+        try:
+            folder.relative_to(self.template_folder)
+        except ValueError:
+            return
+
+        self.current_folder = folder
         self.refresh_templates()
 
     def refresh_templates(self):
-        if not self.template_folder:
+        if not self.template_folder or not self.current_folder:
             return
 
+        try:
+            entries = list(self.current_folder.iterdir())
+        except OSError as exc:
+            self.status.set(f"ERROR READING FOLDER: {exc}")
+            return
+
+        subfolders = sorted(
+            [
+                path for path in entries
+                if path.is_dir() and not path.name.startswith(".")
+            ],
+            key=lambda path: path.name.lower(),
+        )
         self.template_images = sorted(
             [
-                path for path in self.template_folder.iterdir()
+                path for path in entries
                 if path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS
             ],
             key=lambda path: path.name.lower(),
@@ -203,25 +268,76 @@ class ImageMacroApp:
 
         self.thumbnail_refs.clear()
 
-        if not self.template_images:
-            self.template_count.config(text="No supported images found in this folder.")
-            return
+        relative = self.current_folder.relative_to(self.template_folder)
+        breadcrumb = self.template_folder.name
+        if str(relative) != ".":
+            breadcrumb += " / " + " / ".join(relative.parts)
 
+        self.breadcrumb.config(text=breadcrumb)
+        self.back_button.config(
+            state="normal" if self.current_folder != self.template_folder else "disabled"
+        )
+        self.home_button.config(
+            state="normal" if self.current_folder != self.template_folder else "disabled"
+        )
+
+        total = len(subfolders) + len(self.template_images)
         self.template_count.config(
-            text=f"{len(self.template_images)} image(s) found • click an image to select it"
+            text=f"{len(subfolders)} folder(s) • {len(self.template_images)} image(s) • "
+                 "double-click a folder to open it, click an image to select it"
+            if total else "This folder is empty."
         )
 
         columns = 5
-        for index, path in enumerate(self.template_images):
+        index = 0
+
+        for folder in subfolders:
             row, column = divmod(index, columns)
-            self._add_template_card(path, row, column)
+            self._add_folder_card(folder, row, column)
+            index += 1
+
+        for image in self.template_images:
+            row, column = divmod(index, columns)
+            self._add_template_card(image, row, column)
+            index += 1
+
+        self.gallery_canvas.yview_moveto(0)
+
+    def _add_folder_card(self, folder: Path, row: int, column: int):
+        card = ttk.Frame(self.gallery_inner, padding=6, relief="ridge")
+        card.grid(row=row, column=column, padx=5, pady=5, sticky="nsew")
+
+        folder_label = tk.Label(
+            card, text="📁", font=("Segoe UI Emoji", 38),
+            background="#ffffff", cursor="hand2", width=8, height=2
+        )
+        folder_label.pack(padx=2, pady=2)
+
+        name_label = ttk.Label(
+            card, text=folder.name, anchor="center",
+            wraplength=125, cursor="hand2"
+        )
+        name_label.pack(fill="x", pady=(3, 2))
+
+        hint = ttk.Label(
+            card, text="Double-click to open", anchor="center",
+            font=("Segoe UI", 8)
+        )
+        hint.pack(fill="x")
+
+        for widget in (card, folder_label, name_label, hint):
+            widget.bind(
+                "<Double-Button-1>",
+                lambda _event, p=folder: self.open_subfolder(p)
+            )
 
     def _add_template_card(self, path: Path, row: int, column: int):
         card = ttk.Frame(self.gallery_inner, padding=6, relief="ridge")
         card.grid(row=row, column=column, padx=5, pady=5, sticky="nsew")
 
         try:
-            image = Image.open(path)
+            with Image.open(path) as source:
+                image = source.copy()
             image.thumbnail((105, 80), Image.Resampling.LANCZOS)
             thumbnail = ImageTk.PhotoImage(image)
         except Exception:
@@ -248,19 +364,17 @@ class ImageMacroApp:
         name_label.pack(fill="x", pady=(3, 2))
 
         for widget in (card, image_label, name_label):
-            widget.bind("<Button-1>", lambda _event, p=path: self.select_template(p))
+            widget.bind(
+                "<Button-1>",
+                lambda _event, p=path: self.select_template(p)
+            )
 
     def select_template(self, path: Path):
         self.template_path = str(path)
-        self.template_label_update(path)
-        self.status.set(f"TEMPLATE SELECTED — {path.name}")
-
-    def template_label_update(self, path: Path):
-        # Keep the selected template visible in the folder section without
-        # changing the gallery layout.
         self.template_count.config(
-            text=f"{len(self.template_images)} image(s) found • Selected: {path.name}"
+            text=f"{len(self.template_images)} image(s) in current folder • Selected: {path.name}"
         )
+        self.status.set(f"TEMPLATE SELECTED — {path}")
 
     def _prepare(self) -> bool:
         if not self.template_path:
