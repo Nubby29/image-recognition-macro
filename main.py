@@ -1,4 +1,4 @@
-# Image Recognition Macro v0.6.1
+# Image Recognition Macro v0.6.2
 
 import threading
 import tkinter as tk
@@ -14,7 +14,7 @@ from detector import DetectionRegion, ImageDetector
 from macro import MacroRunner, MacroSettings
 
 
-APP_VERSION = "0.6.1"
+APP_VERSION = "0.6.2"
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".webp"}
 
 
@@ -403,13 +403,29 @@ class ImageMacroApp:
             self.status.set(f"CAPTURING WINDOW — {title}")
             screenshot = self._capture_window(hwnd)
         except Exception as exc:
-            messagebox.showerror("Screenshot failed", f"Could not capture the selected window.\n\n{exc}")
+            messagebox.showerror(
+                "Screenshot failed",
+                f"Could not capture the selected window.\\n\\n{exc}",
+            )
             self.status.set("SCREENSHOT FAILED")
             return
 
+        if screenshot.width < 2 or screenshot.height < 2:
+            messagebox.showerror(
+                "Screenshot failed",
+                "The selected window has no usable visible area.",
+            )
+            self.status.set("SCREENSHOT FAILED")
+            return
+
+        self.status.set(f"SCREENSHOT CAPTURED — {title}")
+        selector = RegionSelector(self.root, screenshot, self._set_detection_region)
+        selector.grab_set()
+        selector.focus_force()
+
     @staticmethod
     def _capture_window(hwnd):
-        """Capture a window using Win32 APIs; Pillow ImageGrab has no hwnd argument."""
+        """Capture a window using Win32 APIs without Pillow's unsupported hwnd argument."""
         left, top, right, bottom = win32gui.GetWindowRect(hwnd)
         width = right - left
         height = bottom - top
@@ -433,7 +449,11 @@ class ImageMacroApp:
             result = win32gui.PrintWindow(hwnd, mem_dc.GetSafeHdc(), 2)
             if result != 1:
                 mem_dc.BitBlt(
-                    (0, 0), (width, height), src_dc, (0, 0), win32con.SRCCOPY
+                    (0, 0),
+                    (width, height),
+                    src_dc,
+                    (0, 0),
+                    win32con.SRCCOPY,
                 )
 
             bitmap_info = bitmap.GetInfo()
@@ -456,15 +476,6 @@ class ImageMacroApp:
             if src_dc is not None:
                 src_dc.DeleteDC()
             win32gui.ReleaseDC(hwnd, hwnd_dc)
-
-        if screenshot.width < 2 or screenshot.height < 2:
-            messagebox.showerror("Screenshot failed", "The selected window has no usable visible area.")
-            self.status.set("SCREENSHOT FAILED")
-            return
-        self.status.set(f"SCREENSHOT CAPTURED — {title}")
-        selector = RegionSelector(self.root, screenshot, self._set_detection_region)
-        selector.grab_set()
-        selector.focus_force()
 
     def _set_detection_region(self, region: DetectionRegion):
         self.detection_region = region
