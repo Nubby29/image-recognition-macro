@@ -1,5 +1,6 @@
-# Image Recognition Macro v0.6.2
+# Image Recognition Macro v0.6.3
 
+import ctypes
 import threading
 import tkinter as tk
 import win32con
@@ -14,7 +15,7 @@ from detector import DetectionRegion, ImageDetector
 from macro import MacroRunner, MacroSettings
 
 
-APP_VERSION = "0.6.2"
+APP_VERSION = "0.6.3"
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".webp"}
 
 
@@ -56,7 +57,7 @@ class WindowPicker(tk.Toplevel):
         self.windows.clear()
         self.listbox.delete(0, "end")
         def enum_callback(hwnd, _extra):
-            if hwnd == self.own_hwnd or not win32gui.IsWindowVisible(hwnd) or win32gui.IsIconic(hwnd):
+            if hwnd in (self.own_hwnd, self.winfo_id()) or not win32gui.IsWindowVisible(hwnd) or win32gui.IsIconic(hwnd):
                 return
             title = win32gui.GetWindowText(hwnd).strip()
             if not title:
@@ -446,7 +447,7 @@ class ImageMacroApp:
             bitmap.CreateCompatibleBitmap(src_dc, width, height)
             mem_dc.SelectObject(bitmap)
 
-            result = win32gui.PrintWindow(hwnd, mem_dc.GetSafeHdc(), 2)
+            result = ctypes.windll.user32.PrintWindow(hwnd, mem_dc.GetSafeHdc(), 2)
             if result != 1:
                 mem_dc.BitBlt(
                     (0, 0),
