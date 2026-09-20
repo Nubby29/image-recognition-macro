@@ -1,5 +1,0 @@
-<?xml version="1.0" encoding="utf-8"?>
-<resources>
-    <string name="app_name">Image Recognition Macro</string>
-    <string name="accessibility_description">Allows the macro engine to tap detected image locations.</string>
-</resources>
