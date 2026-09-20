@@ -5,7 +5,7 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
-from PIL import Image, ImageTk
+from PIL import Image, ImageGrab, ImageTk
 
 from detector import DetectionRegion, ImageDetector
 from macro import MacroRunner, MacroSettings
