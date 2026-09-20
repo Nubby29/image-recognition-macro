@@ -1,0 +1,5 @@
+# Image Recognition Macro v0.2.0
+numpy>=2.0,<3
+opencv-python>=4.10,<5
+Pillow>=10,<12
+PyAutoGUI>=0.9.54,<1
