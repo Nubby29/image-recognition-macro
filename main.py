@@ -211,8 +211,43 @@ class ImageMacroApp:
         self._build_ui()
 
     def _build_ui(self):
-        outer = ttk.Frame(self.root, padding=20)
-        outer.pack(fill="both", expand=True)
+        # Main window uses a vertical scroll area so the entire app remains
+        # accessible even when the window is shorter than the UI content.
+        container = ttk.Frame(self.root)
+        container.pack(fill="both", expand=True)
+
+        scrollbar = ttk.Scrollbar(container, orient="vertical")
+        scrollbar.pack(side="right", fill="y")
+
+        self.main_canvas = tk.Canvas(
+            container,
+            highlightthickness=0,
+            yscrollcommand=scrollbar.set,
+        )
+        self.main_canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.config(command=self.main_canvas.yview)
+
+        outer = ttk.Frame(self.main_canvas, padding=20)
+        self.main_window = self.main_canvas.create_window(
+            (0, 0), window=outer, anchor="nw"
+        )
+
+        outer.bind(
+            "<Configure>",
+            lambda _event: self.main_canvas.configure(
+                scrollregion=self.main_canvas.bbox("all")
+            ),
+        )
+        self.main_canvas.bind(
+            "<Configure>",
+            lambda event: self.main_canvas.itemconfigure(
+                self.main_window, width=event.width
+            ),
+        )
+
+        # Mouse-wheel scrolling over the main app.
+        self.main_canvas.bind("<MouseWheel>", self._scroll_main)
+        outer.bind("<MouseWheel>", self._scroll_main)
 
         ttk.Label(
             outer, text="Image Recognition Macro",
@@ -277,13 +312,13 @@ class ImageMacroApp:
         self.gallery_canvas = tk.Canvas(
             gallery_frame, highlightthickness=0, background="#f4f4f4"
         )
-        scrollbar = ttk.Scrollbar(
+        gallery_scrollbar = ttk.Scrollbar(
             gallery_frame, orient="vertical",
             command=self.gallery_canvas.yview
         )
-        self.gallery_canvas.configure(yscrollcommand=scrollbar.set)
+        self.gallery_canvas.configure(yscrollcommand=gallery_scrollbar.set)
 
-        scrollbar.pack(side="right", fill="y")
+        gallery_scrollbar.pack(side="right", fill="y")
         self.gallery_canvas.pack(side="left", fill="both", expand=True)
 
         self.gallery_inner = ttk.Frame(self.gallery_canvas)
@@ -327,7 +362,10 @@ class ImageMacroApp:
         )
 
         region_buttons = ttk.Frame(settings_box)
-        region_buttons.grid(row=2, column=1, columnspan=2, sticky="ew", padx=10, pady=(10, 0))
+        region_buttons.grid(
+            row=2, column=1, columnspan=2, sticky="ew",
+            padx=10, pady=(10, 0)
+        )
 
         ttk.Button(
             region_buttons, text="Check Screenshot & Select Region",
@@ -345,7 +383,8 @@ class ImageMacroApp:
             settings_box, text="Full screen (no region selected)"
         )
         self.region_label.grid(
-            row=3, column=1, columnspan=2, sticky="w", padx=10, pady=(6, 0)
+            row=3, column=1, columnspan=2, sticky="w",
+            padx=10, pady=(6, 0)
         )
 
         settings_box.columnconfigure(1, weight=1)
@@ -386,6 +425,9 @@ class ImageMacroApp:
 
         self.root.bind("<F8>", lambda _event: self.stop_loop())
 
+    def _scroll_main(self, event):
+        # Windows mouse wheel events use positive/negative delta values.
+        self.main_canvas.yview_scroll(int(-event.delta / 120), "units")
     def _resize_gallery(self, event):
         self.gallery_canvas.itemconfigure(
             self.gallery_window, width=event.width
