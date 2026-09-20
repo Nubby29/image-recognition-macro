@@ -1,25 +1,31 @@
-# Image Recognition Macro v0.2.0
+# Image Recognition Macro v0.3.0
 
 import threading
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
+from PIL import Image, ImageTk
+
 from detector import ImageDetector
 from macro import MacroRunner, MacroSettings
 
 
-APP_VERSION = "0.2.0"
+APP_VERSION = "0.3.0"
+IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".webp"}
 
 
 class ImageMacroApp:
     def __init__(self, root: tk.Tk):
         self.root = root
         self.root.title(f"Image Recognition Macro v{APP_VERSION}")
-        self.root.geometry("760x560")
-        self.root.minsize(680, 500)
+        self.root.geometry("820x680")
+        self.root.minsize(720, 560)
 
         self.template_path: str | None = None
+        self.template_folder: Path | None = None
+        self.template_images: list[Path] = []
+        self.thumbnail_refs: list[ImageTk.PhotoImage] = []
         self.detector = ImageDetector()
         self.runner = MacroRunner(self.detector, MacroSettings())
         self.worker: threading.Thread | None = None
@@ -44,22 +50,71 @@ class ImageMacroApp:
             font=("Segoe UI", 10)
         ).pack(anchor="w", pady=(2, 18))
 
-        template_box = ttk.LabelFrame(outer, text="1. Target Image", padding=14)
-        template_box.pack(fill="x", pady=(0, 12))
+        template_box = ttk.LabelFrame(outer, text="1. Templates", padding=14)
+        template_box.pack(fill="both", expand=True, pady=(0, 12))
 
-        self.template_label = ttk.Label(
-            template_box, text="No template selected"
-        )
-        self.template_label.pack(side="left", fill="x", expand=True)
+        folder_bar = ttk.Frame(template_box)
+        folder_bar.pack(fill="x", pady=(0, 10))
 
         ttk.Button(
-            template_box, text="Select Image", command=self.select_template
-        ).pack(side="right")
+            folder_bar, text="Select Template Folder",
+            command=self.select_template_folder
+        ).pack(side="left")
 
-        settings_box = ttk.LabelFrame(outer, text="2. Detection Settings", padding=14)
+        self.folder_label = ttk.Label(
+            folder_bar, text="No template folder selected"
+        )
+        self.folder_label.pack(side="left", fill="x", expand=True, padx=(10, 0))
+
+        self.refresh_button = ttk.Button(
+            folder_bar, text="Refresh", command=self.refresh_templates,
+            state="disabled"
+        )
+        self.refresh_button.pack(side="right")
+
+        self.template_count = ttk.Label(
+            template_box, text="Select a folder to see its images."
+        )
+        self.template_count.pack(anchor="w", pady=(0, 8))
+
+        gallery_frame = ttk.Frame(template_box)
+        gallery_frame.pack(fill="both", expand=True)
+
+        self.gallery_canvas = tk.Canvas(
+            gallery_frame, highlightthickness=0, background="#f4f4f4"
+        )
+        scrollbar = ttk.Scrollbar(
+            gallery_frame, orient="vertical",
+            command=self.gallery_canvas.yview
+        )
+        self.gallery_canvas.configure(yscrollcommand=scrollbar.set)
+
+        scrollbar.pack(side="right", fill="y")
+        self.gallery_canvas.pack(side="left", fill="both", expand=True)
+
+        self.gallery_inner = ttk.Frame(self.gallery_canvas)
+        self.gallery_window = self.gallery_canvas.create_window(
+            (0, 0), window=self.gallery_inner, anchor="nw"
+        )
+
+        self.gallery_inner.bind(
+            "<Configure>",
+            lambda _event: self.gallery_canvas.configure(
+                scrollregion=self.gallery_canvas.bbox("all")
+            )
+        )
+        self.gallery_canvas.bind(
+            "<Configure>", self._resize_gallery
+        )
+
+        settings_box = ttk.LabelFrame(
+            outer, text="2. Detection Settings", padding=14
+        )
         settings_box.pack(fill="x", pady=(0, 12))
 
-        ttk.Label(settings_box, text="Confidence").grid(row=0, column=0, sticky="w")
+        ttk.Label(settings_box, text="Confidence").grid(
+            row=0, column=0, sticky="w"
+        )
         ttk.Scale(
             settings_box, from_=0.50, to=0.99, variable=self.threshold,
             orient="horizontal", length=240
@@ -98,41 +153,122 @@ class ImageMacroApp:
         ).pack(side="right")
 
         status_box = ttk.LabelFrame(outer, text="Status", padding=14)
-        status_box.pack(fill="both", expand=True)
+        status_box.pack(fill="x")
 
         ttk.Label(
             status_box, textvariable=self.status,
-            font=("Consolas", 11), wraplength=680
+            font=("Consolas", 11), wraplength=740
         ).pack(anchor="nw")
 
         ttk.Label(
             outer,
-            text="Tip: move the target around the screen. Detection uses the current screenshot, not saved coordinates.",
+            text="Tip: select a folder, then click a thumbnail. Detection uses the current screenshot, not saved coordinates.",
             foreground="#555555"
         ).pack(anchor="w", pady=(10, 0))
 
         self.root.bind("<F8>", lambda _event: self.stop_loop())
 
+    def _resize_gallery(self, event):
+        self.gallery_canvas.itemconfigure(
+            self.gallery_window, width=event.width
+        )
+
     def _update_threshold_label(self, *_):
         self.threshold_value.config(text=f"{self.threshold.get():.2f}")
 
-    def select_template(self):
-        path = filedialog.askopenfilename(
-            title="Select target image",
-            filetypes=[
-                ("Image files", "*.png *.jpg *.jpeg *.bmp *.webp"),
-                ("All files", "*.*"),
+    def select_template_folder(self):
+        folder = filedialog.askdirectory(title="Select template folder")
+        if not folder:
+            return
+
+        self.template_folder = Path(folder)
+        self.folder_label.config(text=str(self.template_folder))
+        self.refresh_button.config(state="normal")
+        self.refresh_templates()
+
+    def refresh_templates(self):
+        if not self.template_folder:
+            return
+
+        self.template_images = sorted(
+            [
+                path for path in self.template_folder.iterdir()
+                if path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS
             ],
+            key=lambda path: path.name.lower(),
         )
-        if path:
-            self.template_path = path
-            self.template_label.config(text=Path(path).name)
-            self.status.set("TEMPLATE SELECTED — ready to detect")
+
+        for widget in self.gallery_inner.winfo_children():
+            widget.destroy()
+
+        self.thumbnail_refs.clear()
+
+        if not self.template_images:
+            self.template_count.config(text="No supported images found in this folder.")
+            return
+
+        self.template_count.config(
+            text=f"{len(self.template_images)} image(s) found • click an image to select it"
+        )
+
+        columns = 5
+        for index, path in enumerate(self.template_images):
+            row, column = divmod(index, columns)
+            self._add_template_card(path, row, column)
+
+    def _add_template_card(self, path: Path, row: int, column: int):
+        card = ttk.Frame(self.gallery_inner, padding=6, relief="ridge")
+        card.grid(row=row, column=column, padx=5, pady=5, sticky="nsew")
+
+        try:
+            image = Image.open(path)
+            image.thumbnail((105, 80), Image.Resampling.LANCZOS)
+            thumbnail = ImageTk.PhotoImage(image)
+        except Exception:
+            thumbnail = None
+
+        if thumbnail:
+            self.thumbnail_refs.append(thumbnail)
+            image_label = tk.Label(
+                card, image=thumbnail, background="#ffffff",
+                cursor="hand2", width=105, height=80
+            )
+        else:
+            image_label = tk.Label(
+                card, text="Preview\nunavailable",
+                background="#ffffff", cursor="hand2",
+                width=14, height=5
+            )
+
+        image_label.pack(padx=2, pady=2)
+        name_label = ttk.Label(
+            card, text=path.name, anchor="center",
+            wraplength=125, cursor="hand2"
+        )
+        name_label.pack(fill="x", pady=(3, 2))
+
+        for widget in (card, image_label, name_label):
+            widget.bind("<Button-1>", lambda _event, p=path: self.select_template(p))
+
+    def select_template(self, path: Path):
+        self.template_path = str(path)
+        self.template_label_update(path)
+        self.status.set(f"TEMPLATE SELECTED — {path.name}")
+
+    def template_label_update(self, path: Path):
+        # Keep the selected template visible in the folder section without
+        # changing the gallery layout.
+        self.template_count.config(
+            text=f"{len(self.template_images)} image(s) found • Selected: {path.name}"
+        )
 
     def _prepare(self) -> bool:
         if not self.template_path:
-            messagebox.showwarning("No template", "Select a target image first.")
+            messagebox.showwarning(
+                "No template", "Select a template image from the folder first."
+            )
             return False
+
         self.detector.threshold = self.threshold.get()
         self.runner.settings.threshold = self.threshold.get()
         try:
