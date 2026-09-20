@@ -1,4 +1,4 @@
-# Image Recognition Macro v0.2.0
+# Image Recognition Macro v0.5.0
 
 from dataclasses import dataclass
 import threading
@@ -7,7 +7,7 @@ from typing import Callable, Optional
 
 import pyautogui
 
-from detector import ImageDetector, DetectionResult
+from detector import DetectionRegion, ImageDetector, DetectionResult
 
 
 @dataclass
@@ -34,6 +34,7 @@ class MacroRunner:
         template_path: str,
         on_status: Callable[[str], None],
         max_iterations: Optional[int] = None,
+        region: Optional[DetectionRegion] = None,
     ) -> None:
         self._stop.clear()
         self.running = True
@@ -42,7 +43,9 @@ class MacroRunner:
         try:
             while not self._stop.is_set():
                 result: Optional[DetectionResult] = self.detector.find(
-                    template_path, threshold=self.settings.threshold
+                    template_path,
+                    threshold=self.settings.threshold,
+                    region=region,
                 )
 
                 if result:
