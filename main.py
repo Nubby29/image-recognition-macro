@@ -1,7 +1,8 @@
-# Image Recognition Macro v0.5.0
+# Image Recognition Macro v0.6.0
 
 import threading
 import tkinter as tk
+import win32gui
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
@@ -11,9 +12,77 @@ from detector import DetectionRegion, ImageDetector
 from macro import MacroRunner, MacroSettings
 
 
-APP_VERSION = "0.5.0"
+APP_VERSION = "0.6.0"
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".webp"}
 
+
+class WindowPicker(tk.Toplevel):
+    """Let the user choose a visible Windows application window to capture."""
+
+    def __init__(self, parent, own_hwnd, on_selected):
+        super().__init__(parent)
+        self.on_selected = on_selected
+        self.own_hwnd = own_hwnd
+        self.windows = []
+
+        self.title("Choose Window to Screenshot")
+        self.geometry("620x460")
+        self.minsize(500, 350)
+        self.transient(parent)
+        self.grab_set()
+
+        ttk.Label(self, text="Choose the application window to capture", font=("Segoe UI", 14, "bold")).pack(anchor="w", padx=16, pady=(16, 4))
+        ttk.Label(self, text="The Image Recognition Macro window is excluded.").pack(anchor="w", padx=16, pady=(0, 12))
+
+        frame = ttk.Frame(self, padding=(16, 0, 16, 0))
+        frame.pack(fill="both", expand=True)
+        self.listbox = tk.Listbox(frame, font=("Segoe UI", 10), activestyle="none")
+        scrollbar = ttk.Scrollbar(frame, orient="vertical", command=self.listbox.yview)
+        self.listbox.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side="right", fill="y")
+        self.listbox.pack(side="left", fill="both", expand=True)
+
+        buttons = ttk.Frame(self, padding=16)
+        buttons.pack(fill="x")
+        ttk.Button(buttons, text="Cancel", command=self.destroy).pack(side="right")
+        ttk.Button(buttons, text="Take Screenshot", command=self.confirm).pack(side="right", padx=(0, 8))
+        self.listbox.bind("<Double-Button-1>", lambda _event: self.confirm())
+        self.bind("<Escape>", lambda _event: self.destroy())
+        self.refresh_windows()
+
+    def refresh_windows(self):
+        self.windows.clear()
+        self.listbox.delete(0, "end")
+        def enum_callback(hwnd, _extra):
+            if hwnd == self.own_hwnd or not win32gui.IsWindowVisible(hwnd) or win32gui.IsIconic(hwnd):
+                return
+            title = win32gui.GetWindowText(hwnd).strip()
+            if not title:
+                return
+            try:
+                left, top, right, bottom = win32gui.GetWindowRect(hwnd)
+                if right <= left or bottom <= top:
+                    return
+            except win32gui.error:
+                return
+            self.windows.append((hwnd, title))
+        win32gui.EnumWindows(enum_callback, None)
+        self.windows.sort(key=lambda item: item[1].lower())
+        for _hwnd, title in self.windows:
+            self.listbox.insert("end", title)
+        if self.windows:
+            self.listbox.selection_set(0)
+            self.listbox.focus_set()
+        else:
+            self.listbox.insert("end", "No visible application windows found.")
+
+    def confirm(self):
+        selection = self.listbox.curselection()
+        if not selection or not self.windows:
+            return
+        hwnd, title = self.windows[selection[0]]
+        self.destroy()
+        self.on_selected(hwnd, title)
 
 class RegionSelector(tk.Toplevel):
     """Fullscreen screenshot viewer where the user can drag a detection region."""
@@ -308,7 +377,7 @@ class ImageMacroApp:
 
         ttk.Label(
             outer,
-            text="Tip: select a region from a fresh screenshot. Detection searches the current screen inside that region.",
+            text="Tip: choose an application window, take its screenshot, then drag a detection region. Detection searches the live screen.",
             foreground="#555555"
         ).pack(anchor="w", pady=(10, 0))
 
@@ -323,15 +392,24 @@ class ImageMacroApp:
         self.threshold_value.config(text=f"{self.threshold.get():.2f}")
 
     def select_detection_region(self):
-        try:
-            screenshot = ImageGrab.grab()
-        except Exception as exc:
-            messagebox.showerror("Screenshot failed", str(exc))
-            return
+        self.status.set("CHOOSE THE APPLICATION WINDOW TO SCREENSHOT...")
+        picker = WindowPicker(self.root, self.root.winfo_id(), self._capture_selected_window)
+        picker.focus_force()
 
-        selector = RegionSelector(
-            self.root, screenshot, self._set_detection_region
-        )
+    def _capture_selected_window(self, hwnd, title):
+        try:
+            self.status.set(f"CAPTURING WINDOW — {title}")
+            screenshot = ImageGrab.grab(hwnd=hwnd)
+        except Exception as exc:
+            messagebox.showerror("Screenshot failed", f"Could not capture the selected window.\n\n{exc}")
+            self.status.set("SCREENSHOT FAILED")
+            return
+        if screenshot.width < 2 or screenshot.height < 2:
+            messagebox.showerror("Screenshot failed", "The selected window has no usable visible area.")
+            self.status.set("SCREENSHOT FAILED")
+            return
+        self.status.set(f"SCREENSHOT CAPTURED — {title}")
+        selector = RegionSelector(self.root, screenshot, self._set_detection_region)
         selector.grab_set()
         selector.focus_force()
 
