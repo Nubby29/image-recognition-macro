@@ -1,4 +1,4 @@
-# Image Recognition Macro v0.2.0
+# Image Recognition Macro v0.5.0
 
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,8 +18,16 @@ class DetectionResult:
     confidence: float
 
 
+@dataclass
+class DetectionRegion:
+    x: int
+    y: int
+    width: int
+    height: int
+
+
 class ImageDetector:
-    """Whole-screen image detector using OpenCV template matching."""
+    """Image detector using OpenCV template matching, optionally inside a screen region."""
 
     def __init__(self, threshold: float = 0.80):
         self.threshold = threshold
@@ -34,6 +42,7 @@ class ImageDetector:
         template_path: str | Path,
         screen: Optional[np.ndarray] = None,
         threshold: Optional[float] = None,
+        region: Optional[DetectionRegion] = None,
     ) -> Optional[DetectionResult]:
         template = cv2.imread(str(template_path), cv2.IMREAD_COLOR)
         if template is None:
@@ -43,14 +52,30 @@ class ImageDetector:
             screen = self.screenshot()
 
         th = self.threshold if threshold is None else threshold
+
+        offset_x = 0
+        offset_y = 0
+
+        if region is not None:
+            screen_h, screen_w = screen.shape[:2]
+            x1 = max(0, min(region.x, screen_w))
+            y1 = max(0, min(region.y, screen_h))
+            x2 = max(x1, min(region.x + region.width, screen_w))
+            y2 = max(y1, min(region.y + region.height, screen_h))
+
+            if x2 <= x1 or y2 <= y1:
+                return None
+
+            screen = screen[y1:y2, x1:x2]
+            offset_x = x1
+            offset_y = y1
+
         sh, sw = screen.shape[:2]
         thh, thw = template.shape[:2]
 
         if thh > sh or thw > sw:
             return None
 
-        # Grayscale matching is less sensitive to display rendering differences
-        # and substantially cheaper than matching all three color channels.
         screen_gray = cv2.cvtColor(screen, cv2.COLOR_BGR2GRAY)
         template_gray = cv2.cvtColor(template, cv2.COLOR_BGR2GRAY)
 
@@ -64,8 +89,8 @@ class ImageDetector:
 
         x, y = max_loc
         return DetectionResult(
-            x=x + thw // 2,
-            y=y + thh // 2,
+            x=offset_x + x + thw // 2,
+            y=offset_y + y + thh // 2,
             width=thw,
             height=thh,
             confidence=float(max_val),
