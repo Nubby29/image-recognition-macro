@@ -1,4 +1,4 @@
-# Image Recognition Macro v0.4.0
+# Image Recognition Macro v0.5.0
 
 import threading
 import tkinter as tk
@@ -7,12 +7,111 @@ from tkinter import filedialog, messagebox, ttk
 
 from PIL import Image, ImageTk
 
-from detector import ImageDetector
+from detector import DetectionRegion, ImageDetector
 from macro import MacroRunner, MacroSettings
 
 
-APP_VERSION = "0.4.0"
+APP_VERSION = "0.5.0"
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".webp"}
+
+
+class RegionSelector(tk.Toplevel):
+    """Fullscreen screenshot viewer where the user can drag a detection region."""
+
+    def __init__(self, parent, screenshot_image, on_selected):
+        super().__init__(parent)
+        self.parent = parent
+        self.on_selected = on_selected
+        self.image = screenshot_image
+        self.photo = ImageTk.PhotoImage(self.image)
+
+        self.title("Select Detection Region")
+        self.attributes("-topmost", True)
+        self.resizable(False, False)
+
+        self.canvas = tk.Canvas(
+            self,
+            width=self.image.width,
+            height=self.image.height,
+            highlightthickness=0,
+            cursor="crosshair",
+        )
+        self.canvas.pack()
+        self.canvas.create_image(0, 0, image=self.photo, anchor="nw")
+
+        self.start_x = None
+        self.start_y = None
+        self.rect = None
+
+        self.canvas.bind("<ButtonPress-1>", self._start)
+        self.canvas.bind("<B1-Motion>", self._drag)
+        self.canvas.bind("<ButtonRelease-1>", self._finish)
+        self.bind("<Escape>", lambda _event: self.destroy())
+
+        self.info = tk.Label(
+            self,
+            text="Drag a rectangle around the area to search • ESC to cancel",
+            font=("Segoe UI", 10),
+            padx=10,
+            pady=6,
+        )
+        self.info.pack(fill="x")
+
+        self.update_idletasks()
+        screen_w = self.winfo_screenwidth()
+        screen_h = self.winfo_screenheight()
+        x = max(0, (screen_w - self.winfo_reqwidth()) // 2)
+        y = max(0, (screen_h - self.winfo_reqheight()) // 2)
+        self.geometry(f"+{x}+{y}")
+
+    def _clamp(self, x, y):
+        return (
+            max(0, min(self.image.width, x)),
+            max(0, min(self.image.height, y)),
+        )
+
+    def _start(self, event):
+        self.start_x, self.start_y = self._clamp(event.x, event.y)
+        if self.rect:
+            self.canvas.delete(self.rect)
+        self.rect = self.canvas.create_rectangle(
+            self.start_x, self.start_y,
+            self.start_x, self.start_y,
+            outline="red", width=2,
+        )
+
+    def _drag(self, event):
+        if self.start_x is None:
+            return
+        x, y = self._clamp(event.x, event.y)
+        self.canvas.coords(
+            self.rect, self.start_x, self.start_y, x, y
+        )
+
+    def _finish(self, event):
+        if self.start_x is None:
+            return
+
+        end_x, end_y = self._clamp(event.x, event.y)
+        x1, x2 = sorted((self.start_x, end_x))
+        y1, y2 = sorted((self.start_y, end_y))
+        width = x2 - x1
+        height = y2 - y1
+
+        self.start_x = None
+
+        if width < 2 or height < 2:
+            return
+
+        self.on_selected(
+            DetectionRegion(
+                x=int(x1),
+                y=int(y1),
+                width=int(width),
+                height=int(height),
+            )
+        )
+        self.destroy()
 
 
 class ImageMacroApp:
@@ -27,6 +126,8 @@ class ImageMacroApp:
         self.current_folder: Path | None = None
         self.template_images: list[Path] = []
         self.thumbnail_refs: list[ImageTk.PhotoImage] = []
+        self.detection_region: DetectionRegion | None = None
+
         self.detector = ImageDetector()
         self.runner = MacroRunner(self.detector, MacroSettings())
         self.worker: threading.Thread | None = None
@@ -149,6 +250,32 @@ class ImageMacroApp:
             textvariable=self.interval, width=10
         ).grid(row=1, column=1, padx=10, sticky="w", pady=(10, 0))
 
+        ttk.Label(settings_box, text="Detection Region").grid(
+            row=2, column=0, sticky="w", pady=(10, 0)
+        )
+
+        region_buttons = ttk.Frame(settings_box)
+        region_buttons.grid(row=2, column=1, columnspan=2, sticky="ew", padx=10, pady=(10, 0))
+
+        ttk.Button(
+            region_buttons, text="Check Screenshot & Select Region",
+            command=self.select_detection_region
+        ).pack(side="left")
+
+        self.clear_region_button = ttk.Button(
+            region_buttons, text="Clear Region",
+            command=self.clear_detection_region,
+            state="disabled"
+        )
+        self.clear_region_button.pack(side="left", padx=(8, 0))
+
+        self.region_label = ttk.Label(
+            settings_box, text="Full screen (no region selected)"
+        )
+        self.region_label.grid(
+            row=3, column=1, columnspan=2, sticky="w", padx=10, pady=(6, 0)
+        )
+
         settings_box.columnconfigure(1, weight=1)
         self.threshold.trace_add("write", self._update_threshold_label)
 
@@ -181,7 +308,7 @@ class ImageMacroApp:
 
         ttk.Label(
             outer,
-            text="Tip: open folders inside the selected root to keep templates organized. Click an image to select it.",
+            text="Tip: select a region from a fresh screenshot. Detection searches the current screen inside that region.",
             foreground="#555555"
         ).pack(anchor="w", pady=(10, 0))
 
@@ -194,6 +321,120 @@ class ImageMacroApp:
 
     def _update_threshold_label(self, *_):
         self.threshold_value.config(text=f"{self.threshold.get():.2f}")
+
+    def select_detection_region(self):
+        try:
+            screenshot = ImageGrab.grab()
+        except Exception as exc:
+            messagebox.showerror("Screenshot failed", str(exc))
+            return
+
+        selector = RegionSelector(
+            self.root, screenshot, self._set_detection_region
+        )
+        selector.grab_set()
+        selector.focus_force()
+
+    def _set_detection_region(self, region: DetectionRegion):
+        self.detection_region = region
+        self.region_label.config(
+            text=(
+                f"x={region.x}, y={region.y}, "
+                f"width={region.width}, height={region.height}"
+            )
+        )
+        self.clear_region_button.config(state="normal")
+        self.status.set("DETECTION REGION SET — current screen will be searched inside this area")
+
+    def clear_detection_region(self):
+        self.detection_region = None
+        self.region_label.config(text="Full screen (no region selected)")
+        self.clear_region_button.config(state="disabled")
+        self.status.set("DETECTION REGION CLEARED — searching full screen")
+
+    def _prepare(self) -> bool:
+        if not self.template_path:
+            messagebox.showwarning(
+                "No template", "Select a template image from the folder first."
+            )
+            return False
+
+        self.detector.threshold = self.threshold.get()
+        self.runner.settings.threshold = self.threshold.get()
+        try:
+            self.runner.settings.scan_interval = max(0.05, float(self.interval.get()))
+        except (TypeError, ValueError):
+            self.runner.settings.scan_interval = 0.20
+        return True
+
+    def detect_once(self):
+        if not self._prepare():
+            return
+        self.status.set("CAPTURING SCREEN...")
+        try:
+            result = self.detector.find(
+                self.template_path,
+                threshold=self.threshold.get(),
+                region=self.detection_region,
+            )
+        except Exception as exc:
+            self.status.set(f"ERROR: {exc}")
+            return
+
+        if result:
+            self.status.set(
+                f"FOUND — center=({result.x}, {result.y})  "
+                f"size={result.width}x{result.height}  "
+                f"confidence={result.confidence:.3f}"
+            )
+        else:
+            self.status.set(
+                f"NOT FOUND — no match reached {self.threshold.get():.2f}"
+            )
+
+    def detect_and_click(self):
+        if not self._prepare():
+            return
+        self.status.set("CAPTURING SCREEN...")
+        try:
+            result = self.detector.find(
+                self.template_path,
+                threshold=self.threshold.get(),
+                region=self.detection_region,
+            )
+        except Exception as exc:
+            self.status.set(f"ERROR: {exc}")
+            return
+
+        if result:
+            import pyautogui
+            pyautogui.click(result.x, result.y)
+            self.status.set(
+                f"CLICKED — ({result.x}, {result.y})  "
+                f"confidence={result.confidence:.3f}"
+            )
+        else:
+            self.status.set("NOT FOUND — nothing clicked")
+
+    def start_loop(self):
+        if not self._prepare():
+            return
+        if self.runner.running:
+            self.status.set("ALREADY RUNNING")
+            return
+
+        self.status.set("STARTING LOOP...")
+        self.worker = threading.Thread(
+            target=self.runner.run_detect_click_loop,
+            args=(self.template_path, self.status.set),
+            kwargs={"region": self.detection_region},
+            daemon=True,
+        )
+        self.worker.start()
+
+    def stop_loop(self):
+        self.runner.stop()
+        self.status.set("STOP REQUESTED")
 
     def select_template_folder(self):
         folder = filedialog.askdirectory(title="Select template root folder")
@@ -397,7 +638,8 @@ class ImageMacroApp:
         self.status.set("CAPTURING SCREEN...")
         try:
             result = self.detector.find(
-                self.template_path, threshold=self.threshold.get()
+                self.template_path, threshold=self.threshold.get(),
+                region=self.detection_region
             )
         except Exception as exc:
             self.status.set(f"ERROR: {exc}")
@@ -420,7 +662,8 @@ class ImageMacroApp:
         self.status.set("CAPTURING SCREEN...")
         try:
             result = self.detector.find(
-                self.template_path, threshold=self.threshold.get()
+                self.template_path, threshold=self.threshold.get(),
+                region=self.detection_region
             )
         except Exception as exc:
             self.status.set(f"ERROR: {exc}")
@@ -447,6 +690,7 @@ class ImageMacroApp:
         self.worker = threading.Thread(
             target=self.runner.run_detect_click_loop,
             args=(self.template_path, self.status.set),
+            kwargs={"region": self.detection_region},
             daemon=True,
         )
         self.worker.start()
